@@ -56,95 +56,6 @@ impl Chip8 {
         }
     }
 
-    fn cycle(&mut self) {
-        //FETCH
-
-        let high_byte: u16 = self.memory[self.pc as usize] as u16;
-        let low_byte: u16 = self.memory[(self.pc + 1) as usize] as u16;
-        let opcode: u16 = (high_byte << 8) | low_byte;
-
-        match opcode {
-            //Limpa a tela de toda informação
-            //CLS - Clear Screen
-            0x00E0 => {
-                self.video = [false; VIDEO_WIDTH * VIDEO_HEIGHT];
-                println!("Executed CLS (Clear Screen)");
-            }
-
-            //Set the I register to address NNN
-            0xA000..=0xAFFF => {
-                let addr = (opcode & 0x0FFF) as u16;
-                self.i = addr;
-                println!("Executed LD I, {:#05X}", addr);
-            }
-
-            //1nnn - Jump to address nnn
-            //Instrução de setar um valor para o pc
-            0x1000..=0x1FFF => {
-                let addr = opcode & 0x0FFF;
-                self.pc = addr;
-                println!("Executed JP {:03X}", addr);
-                //Encerra o fluxo aqui pois se ele passar ele vai incrementar o pc no final do match
-                //o que sairia do endereço que acabou de ser gerado
-                return;
-            }
-
-            //6xkk - Set Vx = kk
-            //Passa um determinado valor para um register
-            0x6000..=0x6FFF => {
-                let x: usize = ((opcode & 0x0F00) >> 8) as usize;
-                let kk: u8 = (opcode & 0x00FF) as u8;
-                self.v[x] = kk;
-                println!("Executed LD V{:X}, {:#X}", x, kk);
-            }
-
-            //7xkk - Set Vx = Vx + kk
-            //Instrução que faz o somatório do valor atual do register com o valor em kk
-            0x7000..=0x7FFF => {
-                let x = ((opcode & 0x0F00) >> 8) as usize;
-                let kk = (opcode & 0x00FF) as u8;
-                self.v[x] = self.v[x].wrapping_add(kk);
-                println!("Executed ADD V{:X}, {:#X}", x, kk);
-            }
-
-            //Draw Sprites
-            0xD000..=0xDFFF => {
-                let x = self.v[((opcode & 0x0F00) >> 8) as usize] as u16;
-                let y = self.v[((opcode & 0x00F0) >> 8) as usize] as u16;
-                let height = (opcode & 0x000F) as u16;
-
-                self.v[0xF] = 0; // Reset VF (que é utilizado para collizão(ainda não sei como))
-
-                for byte in 0..height {
-                    let y_coord = (y + byte) % VIDEO_HEIGHT as u16;
-                    let sprite = self.memory[(self.i + byte) as usize];
-
-                    for bit in 0..8 {
-                        let x_coord = (x + bit) % VIDEO_WIDTH as u16;
-                        let index = (y_coord * VIDEO_WIDTH as u16 + x_coord) as usize;
-
-                        let sprite_pixel = (sprite >> (7 - bit)) & 1;
-                        let screen_pixel = self.video[index];
-
-                        // XOR the sprite pixel onto the screen
-                        self.video[index] ^= sprite_pixel != 0;
-
-                        // Set VF if a pixel was unset (collision)
-                        if screen_pixel && !self.video[index] {
-                            self.v[0xF] = 1;
-                        }
-                    }
-                }
-                println!("Executed DRW Vx, Vy, N ({}, {}, {})", x, y, height);
-            }
-
-            _ => print!("Unknown opcode! {:#06X}", opcode),
-        }
-
-        //Como dois bytes são lidos de uma vez o Program Counter tem que pular dois endereços de memoria de uma vez
-        self.pc += 2;
-    }
-
     //O Result serve para indicar que a função pode falhar e retornar um valor de sucesso ou um erro
 
     //&mut self significa que o estado da objeto atual será mudado
@@ -184,12 +95,185 @@ impl Chip8 {
     fn write_byte(&mut self, addr: usize, value: u8) {
         self.memory[addr] = value;
     }
+
+    fn load_test_instructions(&mut self) {
+        let program: [u8; 20] = [
+            // Program at 0x200
+            0x60, 0x19, // LD V0, 0x19
+            0x61, 0x09, // LD V1, 0x09
+            0xA3, 0x00, // LD I, 0x300
+            0xD0, 0x1A, // DRW V0, V1, A
+            0x12, 0x08, // JP 0x208
+            // Sprite at 0x300
+            0x1C, //0011100
+            0x22, //0100010
+            0x22, //0100010
+            0x1C, //0011100
+            0x14, //0010100
+            0x14, //0010100
+            0x36, //1001001
+            0x49, //1001001
+            0x49, //1001001
+            0x36, //0110110
+        ];
+
+        for (i, &byte) in program[..10].iter().enumerate() {
+            self.memory[0x200 + i] = byte;
+        }
+        for (i, &byte) in program[10..].iter().enumerate() {
+            self.memory[0x300 + i] = byte;
+        }
+    }
+
+    //Segundo a especificação os timers diminuiem uma unidade a cada 60Hz e isso é usado para coisas como animção e música
+    pub fn tick_timers(&mut self) {
+        if self.delay_timer > 0 {
+            self.delay_timer -= 1;
+        }
+
+        if self.sound_timer > 0 {
+            self.sound_timer -= 1;
+            if self.sound_timer == 0 {
+                //Trigger beep
+                println!("BEEEEEP!")
+            }
+        }
+    }
+
+    fn cycle(&mut self) {
+        //FETCH
+
+        let high_byte: u16 = self.memory[self.pc as usize] as u16;
+        let low_byte: u16 = self.memory[(self.pc + 1) as usize] as u16;
+        let opcode: u16 = (high_byte << 8) | low_byte;
+
+        match opcode {
+            //Limpa a tela de toda informação
+            //CLS - Clear Screen
+            0x00E0 => {
+                self.video = [false; VIDEO_WIDTH * VIDEO_HEIGHT];
+                println!("Executed CLS (Clear Screen)");
+            }
+
+            0xE000 => match opcode & 0x00FF {
+                0x9E => {
+                    //Pula a próxima instrução caso o botão com o valor de Vx estiver pressionado
+                    let x: usize = ((opcode & 0x0F00) >> 8) as usize;
+                    let key = self.v[x] as usize;
+                    if self.keypad[key] {
+                        self.pc += 2;
+                    }
+                }
+
+                0xA1 => {
+                    // Pula a próxima instrução caso o botão com o valor de Vx NÃO estiver pressionado
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    let key = self.v[x] as usize;
+                    if !self.keypad[key] {
+                        self.pc += 2;
+                    }
+                }
+
+                _ => println!("Unknown 0xE op: {:04X}", opcode),
+            },
+
+            //Set the I register to address NNN
+            0xA000..=0xAFFF => {
+                let addr = (opcode & 0x0FFF) as u16;
+                self.i = addr;
+                println!("Executed LD I, {:#05X}", addr);
+            }
+
+            //1nnn - Jump to address nnn
+            //Instrução de setar um valor para o pc
+            0x1000..=0x1FFF => {
+                let addr = opcode & 0x0FFF;
+                self.pc = addr;
+                println!("Executed JP {:03X}", addr);
+                //Encerra o fluxo aqui pois se ele passar ele vai incrementar o pc no final do match
+                //o que sairia do endereço que acabou de ser gerado
+                return;
+            }
+
+            //6xkk - Set Vx = kk
+            //Passa um determinado valor para um register
+            0x6000..=0x6FFF => {
+                let x: usize = ((opcode & 0x0F00) >> 8) as usize;
+                let kk: u8 = (opcode & 0x00FF) as u8;
+                self.v[x] = kk;
+                println!("Executed LD V{:X}, {:#X}", x, kk);
+            }
+
+            //7xkk - Set Vx = Vx + kk
+            //Instrução que faz o somatório do valor atual do register com o valor em kk
+            0x7000..=0x7FFF => {
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+                let kk = (opcode & 0x00FF) as u8;
+                self.v[x] = self.v[x].wrapping_add(kk);
+                println!("Executed ADD V{:X}, {:#X}", x, kk);
+            }
+
+            //Draw Sprites
+            //0xDXYN
+            0xD000..=0xDFFF => {
+                //recuperando o valor de x e movendo 8 bits para direita para ter o valor "puro"
+                let x = self.v[((opcode & 0x0F00) >> 8) as usize] as u16;
+                //recuperando o valor de x e movendo 8 bits para direita para ter o valor "puro"
+                let y = self.v[((opcode & 0x00F0) >> 4) as usize] as u16;
+                //recuperando a altura do sprite. A altura do sprite também representa seu tamanho em bytes
+                //pois para cada unidade de altura tem um byte (8 bits - 10101010) que será desenhado horizontalmente
+                //pois o sprite tem apenas 1 byte de largura
+                let height = (opcode & 0x000F) as u16;
+
+                self.v[0xF] = 0; // Reset VF
+
+                for byte in 0..height {
+                    //o modulo é usado para que caso a coordenada passe do limite da tela [VIDEO_HEIGHT] o pixel comece novamente em baixo ao invés de apenas n aparecer
+                    let y_coord = (y + byte) % VIDEO_HEIGHT as u16;
+                    //os bytes sprite que será desenhado está no endereço de memoria I e vai até I+N (ou I + height)
+                    let sprite = self.memory[(self.i + byte) as usize];
+
+                    //loop para desenhar a linha
+                    for bit in 0..8 {
+                        let x_coord = (x + bit) % VIDEO_WIDTH as u16;
+                        //index para acessar o pixel no video buffer. Como estamos trabalhando com um array de uma dimenção
+                        //para acessar o pixel (x,y) precisamos acessar o index [width*y+x]
+                        let index = (y_coord * VIDEO_WIDTH as u16 + x_coord) as usize;
+
+                        //para recuperar o bit atual que será desenhado
+                        let sprite_pixel = (sprite >> (7 - bit)) & 1;
+
+                        //pega o estado atual daquela posição no buffer de video
+                        let screen_pixel = self.video[index];
+
+                        //Ele checa se o sprite_pixel é 1, Se for 1 ele faz um toggle(se tiver ligado desliga, se tiver desligado liga)
+                        //do pixel no video buffer. Se for 0 não faz nada.
+                        // XOR the sprite pixel onto the screen
+                        self.video[index] ^= sprite_pixel != 0;
+
+                        //Se o pixel for desligado precisamos ligar a flag de colizão do register VF
+                        // Set VF if a pixel was unset (collision)
+                        if screen_pixel && !self.video[index] {
+                            self.v[0xF] = 1;
+                        }
+                    }
+                }
+                println!("Coloriu");
+            }
+
+            _ => print!("Unknown opcode! {:#06X}", opcode),
+        }
+
+        //Como dois bytes são lidos de uma vez o Program Counter tem que pular dois endereços de memoria de uma vez
+        self.pc += 2;
+    }
 }
 
 fn main() {
     let mut chip8 = Chip8::new();
 
-    chip8.load_rom("roms/IBM Logo.ch8");
+    // chip8.load_rom("roms/IBM Logo.ch8");
+    chip8.load_test_instructions();
 
     let width = VIDEO_WIDTH;
     let height = VIDEO_HEIGHT;
