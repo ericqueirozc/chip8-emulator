@@ -97,14 +97,15 @@ impl Chip8 {
     }
 
     fn load_test_instructions(&mut self) {
-        let program: [u8; 20] = [
+        let program: [u8; 21] = [
             // Program at 0x200
             0x60, 0x19, // LD V0, 0x19
             0x61, 0x09, // LD V1, 0x09
             0xA3, 0x00, // LD I, 0x300
-            0xD0, 0x1A, // DRW V0, V1, A
+            0xD0, 0x1B, // DRW V0, V1, B
             0x12, 0x08, // JP 0x208
             // Sprite at 0x300
+            0x05, //0000000             
             0x1C, //0011100
             0x22, //0100010
             0x22, //0100010
@@ -184,6 +185,23 @@ impl Chip8 {
                 println!("Executed LD I, {:#05X}", addr);
             }
 
+            //0x00EE - Return from subroutine
+            0x00EE => {
+                //Retorna da subrotina
+                if self.sp == 0 {
+                    println!("Stack underflow! Cannot return from subroutine.");
+                    return;
+                }
+                //Decrementa o ponteiro da pilha para pegar o endereço do topo
+                //Isso é necessário pois o ponteiro da pilha aponta para o próximo endereço livre
+                self.sp -= 1;
+                //Recupera o endereço do topo da pilha que representa o endereço de retorno
+                let return_addr = self.stack[self.sp as usize];
+                //Seta o pc para o endereço de retorno
+                self.pc = return_addr;
+                println!("Executed RET (Return from subroutine) to {:#05X}", return_addr);
+            }
+
             //1nnn - Jump to address nnn
             //Instrução de setar um valor para o pc
             0x1000..=0x1FFF => {
@@ -194,6 +212,22 @@ impl Chip8 {
                 //o que sairia do endereço que acabou de ser gerado
                 return;
             }
+
+            //2nnn - Call subroutine at nnn
+            //Instrução que chama uma subrotina
+            0x2000..=0x2FFF => {
+                let addr = opcode & 0x0FFF;
+                //Coloca o endereço atual do pc no topo da pilha que é o endereço para qual retornará ao final da subrotina
+                //A pilha guarda os endereços das subrotinas que estão sendo executadas
+                self.stack[self.sp as usize] = self.pc;
+                //Incrementa o ponteiro da pilha para caso uma nova subrotina seja chamada ela seja colocada no topo
+                self.sp += 1;
+                //Seta o pc para o endereço da subrotina
+                self.pc = addr;
+                println!("Executed CALL {:03X}", addr);
+            }
+
+
 
             //6xkk - Set Vx = kk
             //Passa um determinado valor para um register
