@@ -2,6 +2,8 @@ use minifb::{Key, Window, WindowOptions};
 use std::fs::File;
 use std::io::Read;
 use std::path;
+use std::thread::sleep;
+use std::time::Duration;
 
 const MEMORY_SIZE: usize = 4092;
 const REGISTER_COUNT: usize = 16;
@@ -97,15 +99,14 @@ impl Chip8 {
     }
 
     fn load_test_instructions(&mut self) {
-        let program: [u8; 21] = [
+        let program: [u8; 20] = [
             // Program at 0x200
             0x60, 0x19, // LD V0, 0x19
             0x61, 0x09, // LD V1, 0x09
             0xA3, 0x00, // LD I, 0x300
-            0xD0, 0x1B, // DRW V0, V1, B
+            0xD0, 0x1A, // DRW V0, V1, A
             0x12, 0x08, // JP 0x208
             // Sprite at 0x300
-            0x05, //0000000             
             0x1C, //0011100
             0x22, //0100010
             0x22, //0100010
@@ -134,13 +135,10 @@ impl Chip8 {
 
         if self.sound_timer > 0 {
             self.sound_timer -= 1;
-            if self.sound_timer == 0 {
-                //Trigger beep
-                println!("BEEEEEP!")
-            }
+            //Trigger beep
+            println!("BEEEEEP!")
         }
     }
-
     fn cycle(&mut self) {
         //FETCH
 
@@ -185,21 +183,26 @@ impl Chip8 {
                 println!("Executed LD I, {:#05X}", addr);
             }
 
-            //0x00EE - Return from subroutine
+            //Return from subroutine
             0x00EE => {
-                //Retorna da subrotina
                 if self.sp == 0 {
-                    println!("Stack underflow! Cannot return from subroutine.");
+                    println!("Stack underflow!");
                     return;
                 }
                 //Decrementa o ponteiro da pilha para pegar o endereço do topo
                 //Isso é necessário pois o ponteiro da pilha aponta para o próximo endereço livre
+
                 self.sp -= 1;
+
                 //Recupera o endereço do topo da pilha que representa o endereço de retorno
                 let return_addr = self.stack[self.sp as usize];
+
                 //Seta o pc para o endereço de retorno
                 self.pc = return_addr;
-                println!("Executed RET (Return from subroutine) to {:#05X}", return_addr);
+                println!(
+                    "Executed RET (Return from subroutine) to {:#05X}",
+                    return_addr
+                );
             }
 
             //1nnn - Jump to address nnn
@@ -213,9 +216,10 @@ impl Chip8 {
                 return;
             }
 
-            //2nnn - Call subroutine at nnn
-            //Instrução que chama uma subrotina
-            0x2000..=0x2FFF => {
+            // 2NNN: CALL NNN
+            //Call subroutine at NNN (push current PC to stack).
+            //Chama a subrotina no endereço NNN. Colocar no
+            0x2000..0x2FFF => {
                 let addr = opcode & 0x0FFF;
                 //Coloca o endereço atual do pc no topo da pilha que é o endereço para qual retornará ao final da subrotina
                 //A pilha guarda os endereços das subrotinas que estão sendo executadas
@@ -224,10 +228,7 @@ impl Chip8 {
                 self.sp += 1;
                 //Seta o pc para o endereço da subrotina
                 self.pc = addr;
-                println!("Executed CALL {:03X}", addr);
             }
-
-
 
             //6xkk - Set Vx = kk
             //Passa um determinado valor para um register
@@ -245,6 +246,63 @@ impl Chip8 {
                 let kk = (opcode & 0x00FF) as u8;
                 self.v[x] = self.v[x].wrapping_add(kk);
                 println!("Executed ADD V{:X}, {:#X}", x, kk);
+            }
+
+            0x8000..0x8FFF => {
+                let x = (opcode & 0x0F00) as usize;
+                let y = (opcode & 0x00F0) as usize;
+
+                match opcode & 0x000F {
+                    0x0 => {
+                        self.v[x] = self.v[y];
+                        println!("Executed LD V{:X}, V{:X}", x, y);
+                    }
+                    0x1 => {
+                        self.v[x] |= self.v[y];
+                        println!("Executed OR V{:X}, V{:X}", x, y);
+                    }
+                    0x2 => {
+                        self.v[x] &= self.v[y];
+                        println!("Executed AND V{:X}, V{:X}", x, y);
+                    }
+                    0x3 => {
+                        self.v[x] ^= self.v[y];
+                        println!("Executed XOR V{:X}, V{:X}", x, y);
+                    }
+                    0x4 => {
+                        let (result, carry) = self.v[x].overflowing_add(self.v[y]);
+                        self.v[x] = result;
+                        self.v[0xF] = if carry { 1 } else { 0 };
+                        println!("Executed ADD V{:X}, V{:X} (with carry)", x, y);
+                    }
+                    0x5 => {
+                        let (result, borrow) = self.v[x].overflowing_sub(self.v[y]);
+                        self.v[x] = result;
+                        self.v[0xF] = if borrow { 0 } else { 1 };
+                        println!("Executed SUB V{:X}, V{:X}", x, y);
+                    }
+                    0x6 => {
+                        //Salva o bit menos significativo em VF
+                        self.v[0xF] = self.v[x] & 0x01;
+                        //Move o valor de VX 1 bit para direita
+                        self.v[x] >>= 1;
+                        println!("Executed SHR V{:X}", x);
+                    }
+                    0x7 => {
+                        let (result, borrow) = self.v[y].overflowing_sub(self.v[x]);
+                        self.v[x] = result;
+                        self.v[0xF] = if borrow { 0 } else { 1 };
+                        println!("Executed SUB V{:X}, V{:X}", x, y);
+                    }
+                    0xE => {
+                        //Salva o bit mais significativo em VF
+                        self.v[0xF] = (self.v[x] & 0x08) >> 7;
+                        //Move o valor de VX 1 bit para esquerda
+                        self.v[x] <<= 1;
+                        println!("Executed SHR V{:X}", x);
+                    }
+                    _ => println!("Unknown 0x8 instruction: {:04X}", opcode),
+                }
             }
 
             //Draw Sprites
@@ -295,6 +353,147 @@ impl Chip8 {
                 println!("Coloriu");
             }
 
+            0xF000 => match opcode & 0x00FF {
+                //Timers -------------------------------------------
+
+                // Vai salvar o valor do delay_timer em VX
+                0x07 => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    self.v[x] = self.delay_timer;
+                    println!("Executed LD V{:X}, DT", x);
+                }
+
+                //Define o delay_timer com valor de VX
+                0x15 => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    self.delay_timer = self.v[x];
+                    println!("Executed LD DT, V{:X}", x);
+                }
+
+                //Define o sound_timer com o valor de VX
+                0x18 => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    self.sound_timer = self.v[x];
+                    println!("Executed LD ST, V{:X}", x);
+                }
+
+                //IO---------------
+
+                //Soma o valor de VX ao de I
+                0x1E => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    self.i = self.i.wrapping_add(self.v[x] as u16);
+                }
+
+                0x0A => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    if let Some(pressed_key) = self.keypad.iter().position(|&k| k) {
+                        self.v[x] = pressed_key as u8;
+                        println!("Executed LD V{:X}, K", x);
+                    } else {
+                        self.pc -= 2;
+                    }
+                }
+
+                // Seta I com o endereço de um character armazenado em Vx
+                // Fontes normalmente ocupam 5 bytes e são armazenadas a partir do endereço 0x000
+                0x29 => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    let digit = self.v[x] as u16;
+                    self.i = digit * 5;
+                    println!("Executed LD F, V{:X} (char sprite addr)", x);
+                }
+
+                // Armazena o valor de Vx em formato decimal nos endereços I, I+1 e I+2
+                0x33 => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    let vx = self.v[x];
+                    self.memory[self.i as usize] = vx / 100;
+                    self.memory[(self.i + 1) as usize] = (vx % 100) / 10;
+                    self.memory[(self.i + 2) as usize] = vx % 10;
+                    println!("Executed LD B, V{:X}", x);
+                }
+
+                //Armazena os valores de V0 até Vx na memoria a partir do endereço I
+                0x55 => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    for i in 0..=x {
+                        self.memory[(self.i + i as u16) as usize] = self.v[i];
+                    }
+                    println!("Executed LD [I], V0..V{:X}", x);
+                }
+
+                //Armazena os valores a partir de I até x em V0 até Vx
+                0x65 => {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    for i in 0..=x {
+                        self.v[i] = self.memory[(self.i + i as u16) as usize]
+                    }
+                    println!("Executed LD V0..V{:X}, [I]", x);
+                }
+
+                _ => println!("Unknown 0xF instruction: {:04X}", opcode),
+            },
+
+            // Pula a próxima instrução caso Vx seja igual a kk
+            0x3000..=0x3FFF => {
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+                let kk = (opcode & 0x00FF) as u8;
+                if self.v[x] == kk {
+                    self.pc += 2;
+                }
+                println!("Executed SE V{:X}, {:#X}", x, kk);
+            }
+
+            // Pula a próxima instrução caso Vx seja diferente a kk
+            0x4000..=0x4FFF => {
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+                let kk = (opcode & 0x00FF) as u8;
+                if self.v[x] != kk {
+                    self.pc += 2;
+                }
+                println!("Executed SNE V{:X}, {:#X}", x, kk);
+            }
+
+            // Pula a próxima instrução caso Vx seja igual a Vy
+            0x5000..=0x5FFF => {
+                if (opcode & 0x000F) == 0x0 {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    let y = ((opcode & 0x00F0) >> 4) as usize;
+                    if self.v[x] == self.v[y] {
+                        self.pc += 2;
+                    }
+                    println!("Executed SE V{:X}, V{:#X}", x, y);
+                } else {
+                    println!("Unknown 0x5 instruction: {:04X}", opcode);
+                }
+            }
+
+            // Pula a próxima instrução caso Vx seja diferente a Vy
+            0x9000..=0x9FFF => {
+                if (opcode & 0x000F) == 0x0 {
+                    let x = ((opcode & 0x0F00) >> 8) as usize;
+                    let y = ((opcode & 0x00F0) >> 4) as usize;
+                    if self.v[x] != self.v[y] {
+                        self.pc += 2;
+                    }
+                    println!("Executed SE V{:X}, V{:#X}", x, y);
+                } else {
+                    println!("Unknown 0x5 instruction: {:04X}", opcode);
+                }
+            }
+
+            //Salva em Vx um (número aleatório de 0 a 255 AND kk)
+            0xC000..=0xCFFF => {
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+                let kk = (opcode & 0x00FF) as u8;
+
+                let rnd: u8 = rand::random();
+                self.v[x] = rnd & kk;
+
+                println!("Executed RND V{:X}, {:#X} → random {:#X}", x, kk, rnd);
+            }
+
             _ => print!("Unknown opcode! {:#06X}", opcode),
         }
 
@@ -302,7 +501,6 @@ impl Chip8 {
         self.pc += 2;
     }
 }
-
 fn main() {
     let mut chip8 = Chip8::new();
 
@@ -328,7 +526,8 @@ fn main() {
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         chip8.cycle();
-
+        chip8.tick_timers();
+        sleep(Duration::from_millis(16));
         // Update buffer: map chip8.video (bool) to white or black pixels
         for (i, &pixel_on) in chip8.video.iter().enumerate() {
             buffer[i] = if pixel_on { 0xFFFFFF } else { 0x000000 };
