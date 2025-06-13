@@ -248,9 +248,9 @@ impl Chip8 {
                 println!("Executed ADD V{:X}, {:#X}", x, kk);
             }
 
-            0x8000..0x8FFF => {
-                let x = (opcode & 0x0F00) as usize;
-                let y = (opcode & 0x00F0) as usize;
+            0x8000..=0x8FFF => {
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+                let y = ((opcode & 0x00F0) >> 4) as usize;
 
                 match opcode & 0x000F {
                     0x0 => {
@@ -504,8 +504,8 @@ impl Chip8 {
 fn main() {
     let mut chip8 = Chip8::new();
 
-    // chip8.load_rom("roms/IBM Logo.ch8");
-    chip8.load_test_instructions();
+    chip8.load_rom("roms/test_opcode.ch8");
+    // chip8.load_test_instructions();
 
     let width = VIDEO_WIDTH;
     let height = VIDEO_HEIGHT;
