@@ -5,6 +5,8 @@ use std::path;
 use std::thread::sleep;
 use std::time::Duration;
 
+use std::collections::HashMap;
+
 const MEMORY_SIZE: usize = 4092;
 const REGISTER_COUNT: usize = 16;
 const STACK_SIZE: usize = 16;
@@ -41,7 +43,29 @@ struct Chip8 {
     // Video Buffer
     video: [bool; VIDEO_WIDTH * VIDEO_HEIGHT],
 }
-
+fn build_keymap() -> HashMap<Key, u8> {
+    use Key::*;
+    [
+        (Key1, 0x1),
+        (Key2, 0x2),
+        (Key3, 0x3),
+        (Key4, 0xC),
+        (Q, 0x4),
+        (W, 0x5),
+        (E, 0x6),
+        (R, 0xD),
+        (A, 0x7),
+        (S, 0x8),
+        (D, 0x9),
+        (F, 0xE),
+        (Z, 0xA),
+        (X, 0x0),
+        (C, 0xB),
+        (V, 0xF),
+    ]
+    .into_iter()
+    .collect()
+}
 impl Chip8 {
     fn new() -> Self {
         Chip8 {
@@ -99,30 +123,21 @@ impl Chip8 {
     }
 
     fn load_test_instructions(&mut self) {
-        let program: [u8; 20] = [
-            // Program at 0x200
-            0x60, 0x19, // LD V0, 0x19
-            0x61, 0x09, // LD V1, 0x09
-            0xA3, 0x00, // LD I, 0x300
-            0xD0, 0x1A, // DRW V0, V1, A
-            0x12, 0x08, // JP 0x208
-            // Sprite at 0x300
-            0x1C, //0011100
-            0x22, //0100010
-            0x22, //0100010
-            0x1C, //0011100
-            0x14, //0010100
-            0x14, //0010100
-            0x36, //1001001
-            0x49, //1001001
-            0x49, //1001001
-            0x36, //0110110
+        let program: [u8; 12 + 5] = [
+            0x00, 0xE0, // CLS
+            0xF0, 0x0A, // LD V0, K
+            0x60, 0x00, // LD V0, 0
+            0x61, 0x00, // LD V1, 0
+            0xA3, 0x00, // LD I, 0x200
+            0xD0, 0x15, // DRW V0, V1, 5
+            // Dados do sprite (a partir de 0x200)
+            0xF0, 0x90, 0x90, 0x90, 0xF0,
         ];
 
         for (i, &byte) in program[..10].iter().enumerate() {
             self.memory[0x200 + i] = byte;
         }
-        for (i, &byte) in program[10..].iter().enumerate() {
+        for (i, &byte) in program[12..].iter().enumerate() {
             self.memory[0x300 + i] = byte;
         }
     }
@@ -139,6 +154,7 @@ impl Chip8 {
             println!("BEEEEEP!")
         }
     }
+
     fn cycle(&mut self) {
         //FETCH
 
@@ -353,7 +369,7 @@ impl Chip8 {
                 println!("Coloriu");
             }
 
-            0xF000 => match opcode & 0x00FF {
+            0xF000..=0xFFFF => match opcode & 0x00FF {
                 //Timers -------------------------------------------
 
                 // Vai salvar o valor do delay_timer em VX
@@ -504,11 +520,12 @@ impl Chip8 {
 fn main() {
     let mut chip8 = Chip8::new();
 
-    chip8.load_rom("roms/test_opcode.ch8");
+    chip8.load_rom("roms/random_number_test.ch8");
     // chip8.load_test_instructions();
 
     let width = VIDEO_WIDTH;
     let height = VIDEO_HEIGHT;
+    let keymap = build_keymap();
 
     let mut window = Window::new(
         "CHIP-8 Emulator",
@@ -527,6 +544,13 @@ fn main() {
     while window.is_open() && !window.is_key_down(Key::Escape) {
         chip8.cycle();
         chip8.tick_timers();
+        chip8.keypad = [false; 16]; // limpa o estado das teclas
+
+        for key in window.get_keys_pressed(minifb::KeyRepeat::Yes) {
+            if let Some(&chip8_index) = keymap.get(&key) {
+                chip8.keypad[chip8_index as usize] = true;
+            }
+        }
         sleep(Duration::from_millis(16));
         // Update buffer: map chip8.video (bool) to white or black pixels
         for (i, &pixel_on) in chip8.video.iter().enumerate() {
